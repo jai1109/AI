@@ -1,0 +1,6 @@
+{
+  "name": "Echo Voice",
+  "description": "AI-powered real-time system that analyzes voice and determines whether it is genuine or AI-generated, producing running risk scores and protective actions.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
