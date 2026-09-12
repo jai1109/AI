@@ -341,6 +341,22 @@ export class RealtimeAudioProcessor {
   attachInput(streamOrNode: MediaStream | AudioNode): void {
     if (!this.audioCtx || !this.highpassFilter) return;
 
+    // Disconnect old source node if any
+    if (this.sourceNode) {
+      try {
+        this.sourceNode.disconnect();
+      } catch (_) {}
+      this.sourceNode = null;
+    }
+
+    // Stop old media stream tracks if switching
+    if (this.mediaStream && this.mediaStream !== streamOrNode) {
+      try {
+        this.mediaStream.getTracks().forEach((t) => t.stop());
+      } catch (_) {}
+      this.mediaStream = null;
+    }
+
     if (streamOrNode instanceof MediaStream) {
       this.mediaStream = streamOrNode;
       this.sourceNode = this.audioCtx.createMediaStreamSource(streamOrNode);
@@ -350,6 +366,25 @@ export class RealtimeAudioProcessor {
 
     this.sourceNode.connect(this.highpassFilter);
     this.isRunning = true;
+  }
+
+  getLiveVolume(): { rms: number; decibels: number; isSpeaking: boolean } {
+    if (!this.analyser) {
+      return { rms: 0, decibels: -100, isSpeaking: false };
+    }
+    const timeData = new Float32Array(this.analyser.fftSize);
+    this.analyser.getFloatTimeDomainData(timeData);
+    let sumSquares = 0;
+    for (let i = 0; i < timeData.length; i++) {
+      sumSquares += timeData[i] * timeData[i];
+    }
+    const rms = Math.sqrt(sumSquares / timeData.length);
+    const decibels = rms > 1e-5 ? 20 * Math.log10(rms) : -100;
+    return {
+      rms,
+      decibels: Math.max(-100, Math.min(0, Math.round(decibels))),
+      isSpeaking: rms > 0.02,
+    };
   }
 
   getAudioContext(): AudioContext | null {

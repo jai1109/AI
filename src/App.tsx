@@ -140,6 +140,17 @@ export default function App() {
   const [sentinelViewMode, setSentinelViewMode] = useState<"SIMPLE" | "EXPERT">("SIMPLE");
   const [isHowItWorksOpen, setIsHowItWorksOpen] = useState(false);
 
+  // Live Microphone & Surround Voice Recording State
+  const [micVolumeDb, setMicVolumeDb] = useState<number>(-100);
+  const [isMicSpeaking, setIsMicSpeaking] = useState<boolean>(false);
+  const [recordedAudioInfo, setRecordedAudioInfo] = useState<{
+    url: string;
+    duration: number;
+    blob: Blob;
+    verdict: string;
+    riskScore: number;
+  } | null>(null);
+
   // Pipeline & Detection State
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
   const [runningRiskScore, setRunningRiskScore] = useState(14);
@@ -186,6 +197,7 @@ export default function App() {
   const scenarioSegmentIdxRef = useRef(0);
   const analysisIntervalRef = useRef<number | null>(null);
   const durationTimerRef = useRef<number | null>(null);
+  const volumeMonitorRef = useRef<number | null>(null);
   const consecutiveCriticalChunksRef = useRef(0);
   const handleEndCallRef = useRef<((reasonArg?: unknown) => void) | null>(null);
 
@@ -285,8 +297,13 @@ export default function App() {
       snippet = `Analyzing voice recording: "${uploadedAudio.name}"`;
       callerName = `Uploaded: ${uploadedAudio.name}`;
     } else if (isMicActive) {
-      snippet = "Live microphone speech stream";
-      callerName = "Live Microphone";
+      const vol = audioProcessorRef.current?.getLiveVolume();
+      if (vol && vol.isSpeaking) {
+        snippet = "Analyzing room speech harmonics & acoustic micro-tremors...";
+      } else {
+        snippet = "Listening to surrounding room audio... (Speak into microphone)";
+      }
+      callerName = "Live Room Microphone";
     } else if (activeScenario) {
       const segs = activeScenario.audioSegments;
       const seg = segs[scenarioSegmentIdxRef.current % segs.length];
@@ -590,9 +607,20 @@ export default function App() {
   // Start Live Microphone Call
   const handleStartMicCall = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Explicitly disable any synthetic audio playback so only real ambient mic is heard
+      synthesizerRef.current?.setEnabled(false);
+      synthesizerRef.current?.stop();
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        },
+      });
       await audioProcessorRef.current?.init(stream);
       audioProcessorRef.current?.clearCachedBufferFeatures();
+      audioProcessorRef.current?.startRecording();
 
       sessionTokenRef.current += 1;
       consecutiveCriticalChunksRef.current = 0;
@@ -603,17 +631,27 @@ export default function App() {
       chunkIndexRef.current = 0;
       setRecentChunks([]);
       setAlertBanner(null);
-      const initialScore = 13;
+      const initialScore = 12;
       setRunningRiskScore(initialScore);
       setClassification("GENUINE");
 
       addAuditLog(
         "CHUNK_ANALYSIS",
-        "Live Microphone Stream Connected",
-        "Capturing live audio from device microphone at 16kHz PCM. Real-time sliding window analysis active.",
+        "Live Room Microphone Recording Started",
+        "Listening to room audio and surrounding voices. Real-time neural vocal tract and synthetic artifact detection active.",
         "info",
         initialScore
       );
+
+      // Start volume monitor loop for live visual VU meter
+      if (volumeMonitorRef.current) clearInterval(volumeMonitorRef.current);
+      volumeMonitorRef.current = window.setInterval(() => {
+        if (audioProcessorRef.current) {
+          const vol = audioProcessorRef.current.getLiveVolume();
+          setMicVolumeDb(vol.db);
+          setIsMicSpeaking(vol.isSpeaking);
+        }
+      }, 80);
 
       // Warm-up delay to allow microphone input to reach analyser node
       setTimeout(() => {
@@ -623,13 +661,13 @@ export default function App() {
       if (analysisIntervalRef.current) clearInterval(analysisIntervalRef.current);
       analysisIntervalRef.current = window.setInterval(() => {
         processNextChunk();
-      }, 2500);
+      }, 2200);
     } catch (err: any) {
       console.warn("Microphone access note:", err);
       setAlertBanner({
         show: true,
-        title: "Microphone Access",
-        message: "Microphone permission is required for live audio input. You can also test with realistic scenarios or upload an audio file directly!",
+        title: "Microphone Access Required",
+        message: "Please allow microphone access in your browser so EchoVoice can record surrounding voices and detect AI voice clones.",
         severity: "warning",
       });
     }
@@ -641,12 +679,46 @@ export default function App() {
     sessionTokenRef.current += 1;
     consecutiveCriticalChunksRef.current = 0;
     setIsCallActive(false);
+
+    // Stop volume monitoring
+    if (volumeMonitorRef.current) {
+      clearInterval(volumeMonitorRef.current);
+      volumeMonitorRef.current = null;
+    }
+    setMicVolumeDb(-100);
+    setIsMicSpeaking(false);
+
+    // If live microphone was recording, finalize recorded audio blob for user review & playback
+    if (isMicActive && audioProcessorRef.current) {
+      const recordedBlob = audioProcessorRef.current.stopRecording();
+      if (recordedBlob && recordedBlob.size > 0) {
+        const url = URL.createObjectURL(recordedBlob);
+        const duration = Math.max(1, callDurationSeconds);
+        setRecordedAudioInfo({
+          url,
+          duration,
+          blob: recordedBlob,
+          verdict: classification,
+          riskScore: runningRiskScore,
+        });
+        addAuditLog(
+          "CALL_SESSION",
+          "Surrounding Audio Recording Saved",
+          `Captured ${duration}s of live room voice audio. Final detection verdict: ${classification} (${runningRiskScore}% risk score).`,
+          runningRiskScore >= 70 ? "critical" : "info",
+          runningRiskScore
+        );
+      }
+    }
+
     setIsMicActive(false);
     setActiveTranscript("");
     if (analysisIntervalRef.current) clearInterval(analysisIntervalRef.current);
     audioProcessorRef.current?.stopBuffer();
     audioProcessorRef.current?.stop();
     synthesizerRef.current?.stop();
+    // Re-enable synthesizer in case user switches to simulated scenarios
+    synthesizerRef.current?.setEnabled(true);
     setRecentChunks([]);
 
     if (terminationReason) {
@@ -1114,6 +1186,10 @@ export default function App() {
               riskScore={runningRiskScore}
               activeTranscript={activeTranscript}
               onOpenHelp={() => setIsHowItWorksOpen(true)}
+              micVolumeDb={micVolumeDb}
+              isMicSpeaking={isMicSpeaking}
+              recordedAudioInfo={recordedAudioInfo}
+              onClearRecordedAudio={() => setRecordedAudioInfo(null)}
             />
 
             {/* Plain-English Live Verdict Card */}

@@ -259,9 +259,21 @@ export class ScenarioAudioSynthesizer {
   private masterGain: GainNode | null = null;
   private currentNodes: (AudioNode | OscillatorNode)[] = [];
   private isMuted: boolean = false;
+  private isEnabled: boolean = true;
 
   constructor() {
     // Lazy init on first user interaction
+  }
+
+  setEnabled(enabled: boolean) {
+    this.isEnabled = enabled;
+    if (!enabled) {
+      this.stop();
+    }
+  }
+
+  getIsEnabled(): boolean {
+    return this.isEnabled;
   }
 
   private initCtx(): AudioContext {
@@ -291,9 +303,9 @@ export class ScenarioAudioSynthesizer {
   }
 
   playSpeechSegment(text: string, isSynthetic: boolean, onStart?: () => void, onEnd?: () => void): void {
-    if (this.isMuted) {
+    if (!this.isEnabled || this.isMuted) {
       onStart?.();
-      setTimeout(() => onEnd?.(), 2500);
+      setTimeout(() => onEnd?.(), 1000);
       return;
     }
 

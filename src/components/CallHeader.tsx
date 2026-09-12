@@ -11,6 +11,9 @@ import {
   FileAudio,
   X,
   Play,
+  Square,
+  Volume2,
+  Download,
 } from "lucide-react";
 import { CallScenario, UploadedAudioInfo } from "../types";
 import { CALL_SCENARIOS } from "../utils/scenariosData";
@@ -30,6 +33,16 @@ interface CallHeaderProps {
   riskScore: number;
   activeTranscript?: string;
   onOpenHelp?: () => void;
+  micVolumeDb?: number;
+  isMicSpeaking?: boolean;
+  recordedAudioInfo?: {
+    url: string;
+    duration: number;
+    blob: Blob;
+    verdict: string;
+    riskScore: number;
+  } | null;
+  onClearRecordedAudio?: () => void;
 }
 
 export function CallHeader({
@@ -47,6 +60,10 @@ export function CallHeader({
   riskScore,
   activeTranscript,
   onOpenHelp,
+  micVolumeDb = -100,
+  isMicSpeaking = false,
+  recordedAudioInfo = null,
+  onClearRecordedAudio,
 }: CallHeaderProps) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
@@ -100,14 +117,16 @@ export function CallHeader({
     currentCallerName = uploadedAudio.name;
     currentCallerPhone = `Device Audio File • ${(uploadedAudio.size / 1024).toFixed(0)} KB • ${uploadedAudio.durationSeconds.toFixed(1)}s`;
   } else if (isMicActive) {
-    currentCallerName = "Live Device Microphone";
-    currentCallerPhone = "Local Audio Stream (Live Hardware Capture)";
+    currentCallerName = "Live Room Microphone";
+    currentCallerPhone = "Recording Surrounding Audio • Real-Time AI Impersonator Detection";
   } else if (activeScenario) {
     currentCallerName = activeScenario.callerName;
     currentCallerPhone = activeScenario.callerPhone;
   }
 
   const isHighThreat = isCallActive && riskScore >= 70;
+  // Normalized VU meter level 0 to 100%
+  const vuLevel = Math.max(0, Math.min(100, Math.round(((micVolumeDb + 65) / 65) * 100)));
 
   return (
     <div
@@ -151,6 +170,8 @@ export function CallHeader({
             className={`w-12 h-12 rounded-xl flex items-center justify-center border transition-all ${
               uploadedAudio
                 ? "bg-red-950/30 border-[#ef4444]/50 text-[#ef4444]"
+                : isMicActive
+                ? "bg-red-950/40 border-[#ef4444] text-[#ef4444] shadow-[0_0_15px_rgba(239,68,68,0.3)] animate-pulse"
                 : isCallActive
                 ? isHighThreat
                   ? "bg-red-950/30 border-[#ef4444]/60 text-[#ef4444] shadow-[0_0_15px_rgba(239,68,68,0.25)]"
@@ -160,6 +181,8 @@ export function CallHeader({
           >
             {uploadedAudio ? (
               <FileAudio className="w-6 h-6" />
+            ) : isMicActive ? (
+              <Mic className="w-6 h-6 text-[#ef4444]" />
             ) : isCallActive ? (
               isHighThreat ? (
                 <ShieldAlert className="w-6 h-6 animate-pulse" />
@@ -172,7 +195,7 @@ export function CallHeader({
           </div>
 
           <div>
-            <div className="flex items-center space-x-2">
+            <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-base font-bold text-[#e1e1e3] truncate max-w-xs sm:max-w-md">
                 {currentCallerName}
               </h2>
@@ -181,7 +204,13 @@ export function CallHeader({
                   <span>DEVICE FILE</span>
                 </span>
               )}
-              {isCallActive && (
+              {isMicActive && (
+                <span className="flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full bg-red-950/80 text-[#ef4444] border border-[#ef4444]/40 text-[10px] font-mono font-bold">
+                  <span className="w-2 h-2 rounded-full bg-[#ef4444] animate-ping"></span>
+                  <span>RECORDING LIVE AUDIO</span>
+                </span>
+              )}
+              {isCallActive && !isMicActive && (
                 <span className="flex items-center space-x-1 px-2.5 py-0.5 rounded-full bg-[#27272a] text-green-400 text-[10px] font-mono font-medium">
                   <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse"></span>
                   <span>CONNECTED</span>
@@ -189,7 +218,7 @@ export function CallHeader({
               )}
             </div>
 
-            <div className="flex items-center space-x-2 text-xs text-[#71717a] font-mono mt-0.5">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-[#71717a] font-mono mt-0.5">
               <span className="truncate max-w-xs sm:max-w-md">{currentCallerPhone}</span>
               {isCallActive && (
                 <>
@@ -198,6 +227,22 @@ export function CallHeader({
                     {formatTime(callDurationSeconds)}
                   </span>
                 </>
+              )}
+              {isMicActive && (
+                <div className="flex items-center space-x-1.5 pl-2 border-l border-[#27272a]">
+                  <Volume2 className="w-3.5 h-3.5 text-[#a1a1aa]" />
+                  <div className="w-16 h-2 rounded-full bg-[#27272a] overflow-hidden">
+                    <div
+                      className={`h-full transition-all duration-100 ${
+                        vuLevel > 60 ? "bg-[#ef4444]" : vuLevel > 25 ? "bg-amber-400" : "bg-green-400"
+                      }`}
+                      style={{ width: `${vuLevel}%` }}
+                    />
+                  </div>
+                  <span className="text-[10px] text-[#a1a1aa]">
+                    {isMicSpeaking ? "VOICE ACTIVE" : "LISTENING"}
+                  </span>
+                </div>
               )}
             </div>
           </div>
@@ -331,12 +376,21 @@ export function CallHeader({
             onClick={isMicActive ? onEndCall : onStartMicCall}
             className={`px-3.5 py-2.5 rounded-lg text-xs font-semibold flex items-center space-x-2 transition-all cursor-pointer border ${
               isMicActive
-                ? "bg-red-950/30 border-[#ef4444]/50 text-[#ef4444]"
+                ? "bg-[#ef4444] hover:bg-red-600 border-[#ef4444] text-white shadow-[0_0_15px_rgba(239,68,68,0.4)]"
                 : "bg-[#09090b] hover:bg-[#27272a] border-[#27272a] text-[#e1e1e3]"
             }`}
           >
-            <Mic className="w-4 h-4 text-[#ef4444]" />
-            <span>{isMicActive ? "Stop Live Mic" : "Live Mic Stream"}</span>
+            {isMicActive ? (
+              <>
+                <Square className="w-4 h-4 text-white" />
+                <span>Stop Recording & Mic</span>
+              </>
+            ) : (
+              <>
+                <Mic className="w-4 h-4 text-[#ef4444]" />
+                <span>Live Mic (Record & Detect)</span>
+              </>
+            )}
           </button>
 
           {/* Call / Hangup / Analyze Main Toggle */}
@@ -347,7 +401,7 @@ export function CallHeader({
               className="px-4 py-2.5 rounded-lg bg-[#ef4444] hover:bg-red-600 text-white text-xs font-bold uppercase tracking-wider flex items-center space-x-2 transition-colors cursor-pointer shadow-[0_0_15px_rgba(239,68,68,0.4)]"
             >
               <PhoneOff className="w-4 h-4" />
-              <span>Interrupt Call</span>
+              <span>{isMicActive ? "Stop Mic & Recording" : "Interrupt Call"}</span>
             </button>
           ) : uploadedAudio ? (
             <button
@@ -371,6 +425,62 @@ export function CallHeader({
         </div>
       </div>
 
+      {/* Recorded Voice Audio Playback Strip */}
+      {recordedAudioInfo && !isCallActive && (
+        <div className="mt-4 pt-3.5 border-t border-[#27272a] flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#09090b]/60 p-3 rounded-lg">
+          <div className="flex items-center space-x-3 min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-red-950/40 border border-[#ef4444]/40 flex items-center justify-center text-[#ef4444] shrink-0">
+              <Mic className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-bold text-white">Recorded Room Audio</span>
+                <span className="text-[10px] text-[#71717a] font-mono">
+                  {recordedAudioInfo.duration}s captured
+                </span>
+                <span
+                  className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded border ${
+                    recordedAudioInfo.riskScore >= 70
+                      ? "bg-red-950/80 text-[#ef4444] border-[#ef4444]/50"
+                      : "bg-green-950/80 text-green-400 border-green-500/50"
+                  }`}
+                >
+                  {recordedAudioInfo.riskScore >= 70
+                    ? `AI CLONE DETECTED (${recordedAudioInfo.riskScore}%)`
+                    : `VERIFIED HUMAN (${recordedAudioInfo.riskScore}%)`}
+                </span>
+              </div>
+              <audio
+                controls
+                src={recordedAudioInfo.url}
+                className="h-7 mt-1.5 w-full max-w-sm"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-2 shrink-0">
+            <a
+              href={recordedAudioInfo.url}
+              download={`recorded_surrounding_voice_${Date.now()}.webm`}
+              className="px-2.5 py-1.5 rounded-lg bg-[#27272a] hover:bg-[#3f3f46] text-white text-xs font-semibold flex items-center space-x-1.5 transition-colors cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Save Audio</span>
+            </a>
+            {onClearRecordedAudio && (
+              <button
+                type="button"
+                onClick={onClearRecordedAudio}
+                className="p-1.5 rounded-lg text-[#71717a] hover:text-white hover:bg-[#27272a] transition-colors cursor-pointer"
+                title="Dismiss recorded audio"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Live Speaking Transcript Ticker */}
       {isCallActive && (
         <div className="mt-4 pt-3.5 border-t border-[#27272a] flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-in fade-in">
@@ -387,13 +497,13 @@ export function CallHeader({
               <div className="flex items-center space-x-2">
                 <span className="text-[10px] uppercase font-bold tracking-widest text-[#a1a1aa] shrink-0 font-mono">
                   {isMicActive
-                    ? "Live Mic Input:"
+                    ? "Live Room Voices:"
                     : uploadedAudio
                     ? "File Stream:"
                     : "Now Speaking:"}
                 </span>
                 <span className="text-xs text-white italic truncate block">
-                  &ldquo;{activeTranscript || "Analyzing vocal acoustic signature..."}&rdquo;
+                  &ldquo;{activeTranscript || "Listening to room audio and acoustic frequencies..."}&rdquo;
                 </span>
               </div>
             </div>
@@ -401,7 +511,9 @@ export function CallHeader({
 
           <div className="flex items-center space-x-2 text-[11px] font-mono text-[#a1a1aa] shrink-0">
             <span>Audio Status:</span>
-            <span className="text-green-400 font-bold">STREAMING ACTIVE</span>
+            <span className="text-green-400 font-bold">
+              {isMicActive ? "RECORDING & ANALYZING" : "STREAMING ACTIVE"}
+            </span>
           </div>
         </div>
       )}

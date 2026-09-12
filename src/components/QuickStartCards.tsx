@@ -196,28 +196,34 @@ export function QuickStartCards({
           </button>
         </div>
 
-        {/* Card 3: Test Your Own Microphone */}
+        {/* Card 3: Test Surrounding Voices with Live Microphone */}
         <div
           className={`p-4 rounded-xl border transition-all flex flex-col justify-between ${
             isTestingMic
-              ? "bg-[#27272a] border-[#3f3f46] shadow-[0_0_15px_rgba(239,68,68,0.15)]"
+              ? "bg-red-950/20 border-[#ef4444] shadow-[0_0_15px_rgba(239,68,68,0.25)]"
               : "bg-[#09090b] border-[#27272a] hover:border-[#3f3f46]"
           }`}
         >
           <div>
             <div className="flex items-center justify-between mb-2">
-              <div className="w-8 h-8 rounded-lg bg-[#27272a] border border-[#3f3f46] flex items-center justify-center text-[#ef4444]">
+              <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                isTestingMic ? "bg-red-950/60 border border-[#ef4444] text-[#ef4444] animate-pulse" : "bg-[#27272a] border border-[#3f3f46] text-[#ef4444]"
+              }`}>
                 <Mic className="w-4 h-4" />
               </div>
-              <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-[#27272a] text-[#a1a1aa]">
-                LIVE HARDWARE
+              <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded border ${
+                isTestingMic
+                  ? "bg-red-950/70 text-[#ef4444] border-[#ef4444]/50 animate-pulse"
+                  : "bg-[#27272a] text-[#a1a1aa] border-transparent"
+              }`}>
+                {isTestingMic ? "● RECORDING LIVE" : "SURROUNDING VOICES"}
               </span>
             </div>
             <h3 className="text-xs font-bold text-white mb-1">
-              Test Your Own Voice
+              Live Mic & Surround Audio
             </h3>
             <p className="text-[11px] text-[#a1a1aa] leading-relaxed mb-3">
-              Speak into your microphone naturally. Your real vocal folds and breathing will verify you as an authentic human.
+              Turns on your mic to record and inspect surrounding voices. Detects in real time whether a speaker or nearby voice is real human or an AI clone.
             </p>
           </div>
 
@@ -226,19 +232,19 @@ export function QuickStartCards({
             onClick={isTestingMic ? onEndCall : onStartMicCall}
             className={`w-full py-2 px-3 rounded-lg text-xs font-bold uppercase tracking-wider flex items-center justify-center space-x-1.5 cursor-pointer transition-colors ${
               isTestingMic
-                ? "bg-[#ef4444] text-white"
+                ? "bg-[#ef4444] hover:bg-red-600 text-white shadow-[0_0_12px_rgba(239,68,68,0.4)]"
                 : "bg-[#27272a] hover:bg-[#3f3f46] text-white"
             }`}
           >
             {isTestingMic ? (
               <>
                 <Square className="w-3.5 h-3.5" />
-                <span>Stop Mic</span>
+                <span>Stop Recording & Mic</span>
               </>
             ) : (
               <>
                 <Mic className="w-3.5 h-3.5 text-[#ef4444]" />
-                <span>Turn On Mic</span>
+                <span>Record & Detect Voice</span>
               </>
             )}
           </button>
