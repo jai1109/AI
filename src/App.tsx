@@ -313,7 +313,7 @@ export default function App() {
       scenarioSegmentIdxRef.current += 1;
 
       // Play sound via synthesizer if not muted
-      synthesizerRef.current?.playSpeechSegment(seg.text, activeScenario.isSynthetic);
+      synthesizerRef.current?.playSpeechSegment(seg.text, activeScenario.isSynthetic, seg.acousticProfile);
     }
 
     setActiveTranscript(snippet);
@@ -336,6 +336,7 @@ export default function App() {
             callerName,
             transcriptSnippet: snippet,
             isSynthetic: isSyntheticExplicit,
+            isLiveMic: isMicActive,
           },
           runningRiskScore,
         }),
@@ -348,7 +349,7 @@ export default function App() {
         analysis = runLocalForensics(
           currentChunkIdx,
           features,
-          { callerName, transcriptSnippet: snippet, isSynthetic: isSyntheticExplicit },
+          { callerName, transcriptSnippet: snippet, isSynthetic: isSyntheticExplicit, isLiveMic: isMicActive } as any,
           runningRiskScore
         );
       }
@@ -357,7 +358,7 @@ export default function App() {
       analysis = runLocalForensics(
         currentChunkIdx,
         features,
-        { callerName, transcriptSnippet: snippet, isSynthetic: isSyntheticExplicit },
+        { callerName, transcriptSnippet: snippet, isSynthetic: isSyntheticExplicit, isLiveMic: isMicActive } as any,
         runningRiskScore
       );
     }
@@ -436,17 +437,22 @@ export default function App() {
       analysis.riskScore >= defensePolicy.autoInterruptThreshold ||
       analysis.classification === "CLONED";
 
-    if (isCriticalRisk) {
+    if (isMicActive) {
+      // Live microphone sessions must NEVER be severed by defense policies
+      consecutiveCriticalChunksRef.current = 0;
+    } else if (isCriticalRisk) {
       consecutiveCriticalChunksRef.current += 1;
     } else {
       consecutiveCriticalChunksRef.current = 0;
     }
 
     // Auto-Terminate feature in Defense Policy:
-    // Automatically ends the call if a 'CRITICAL' risk score is maintained for more than 3 consecutive chunks
+    // Automatically ends the call if a 'CRITICAL' risk score is maintained across sustained consecutive chunks
+    // Live microphone sessions are completely exempt to ensure uninterrupted room audio testing
     if (
+      !isMicActive &&
       defensePolicy.enableAutoTerminate &&
-      consecutiveCriticalChunksRef.current > 3
+      consecutiveCriticalChunksRef.current > 7
     ) {
       addAuditLog(
         "INTERRUPT_TRIGGERED",
@@ -593,7 +599,16 @@ export default function App() {
     // Init processor
     await audioProcessorRef.current?.init();
     await audioProcessorRef.current?.resume();
-    setActiveAnalyserNode(audioProcessorRef.current?.getAnalyser() || null);
+    const analyser = audioProcessorRef.current?.getAnalyser() || null;
+    setActiveAnalyserNode(analyser);
+
+    // Ensure synthesizer is enabled, unmuted, and connected to audio processor's context & analyser
+    synthesizerRef.current?.setEnabled(true);
+    synthesizerRef.current?.setMute(isMuted);
+    const audioCtx = audioProcessorRef.current?.getAudioContext();
+    if (audioCtx) {
+      synthesizerRef.current?.init(audioCtx, analyser || undefined);
+    }
 
     addAuditLog(
       "CHUNK_ANALYSIS",
@@ -602,6 +617,18 @@ export default function App() {
       "info",
       baseline
     );
+
+    // Play first segment immediately so the AI voice clone or human voice is heard instantly
+    const firstSeg = scenario.audioSegments[0];
+    if (firstSeg) {
+      setActiveTranscript(firstSeg.text);
+      synthesizerRef.current?.playSpeechSegment(
+        firstSeg.text,
+        scenario.isSynthetic,
+        firstSeg.acousticProfile
+      );
+      scenarioSegmentIdxRef.current = 1;
+    }
 
     // Run first chunk with a short warm-up delay, then start interval
     setTimeout(() => {

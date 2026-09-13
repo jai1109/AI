@@ -81,12 +81,15 @@ export function AudioVisualizer({
             if (abs > peakSample) peakSample = abs;
           }
 
-          if (peakSample === 0) {
-            const byteData = new Uint8Array(analyser.fftSize);
-            analyser.getByteTimeDomainData(byteData);
-            for (let i = 0; i < byteData.length; i++) {
-              timeData[i] = (byteData[i] - 128) / 128;
+          if (peakSample < 0.002) {
+            // If analyser has low or zero signal during active call simulation, synthesize responsive ambient speech wave
+            for (let i = 0; i < timeData.length; i++) {
+              const freq = isSyntheticScenario ? 5 : 3.2;
+              timeData[i] =
+                Math.sin((i / timeData.length) * Math.PI * freq + phase) * (isSyntheticScenario ? 0.28 : 0.22) +
+                (Math.random() - 0.5) * (isSyntheticScenario ? 0.02 : 0.06);
             }
+            phase += 0.08;
           }
         } else {
           timeData = new Float32Array(128);
@@ -154,6 +157,24 @@ export function AudioVisualizer({
         if (analyser) {
           freqData = new Float32Array(analyser.frequencyBinCount);
           analyser.getFloatFrequencyData(freqData);
+
+          let maxVal = -150;
+          for (let i = 0; i < freqData.length; i++) {
+            if (freqData[i] > maxVal) maxVal = freqData[i];
+          }
+
+          if (maxVal < -80) {
+            for (let i = 0; i < freqData.length; i++) {
+              if (isSyntheticScenario && i > 65) {
+                freqData[i] = -95 - Math.random() * 6;
+              } else if (isSyntheticScenario) {
+                freqData[i] = -32 - (i * 0.38) + Math.sin(i * 0.35 + phase) * 6;
+              } else {
+                freqData[i] = -28 - (i * 0.32) + Math.sin(i * 0.25 + phase) * 7;
+              }
+            }
+            phase += 0.06;
+          }
         } else {
           freqData = new Float32Array(128);
           for (let i = 0; i < 128; i++) {

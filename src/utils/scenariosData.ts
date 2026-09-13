@@ -257,9 +257,11 @@ export const CALL_SCENARIOS: CallScenario[] = [
 export class ScenarioAudioSynthesizer {
   private audioCtx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
+  private targetAnalyser: AnalyserNode | null = null;
   private currentNodes: (AudioNode | OscillatorNode)[] = [];
   private isMuted: boolean = false;
   private isEnabled: boolean = true;
+  private speechTimeout: number | null = null;
 
   constructor() {
     // Lazy init on first user interaction
@@ -276,112 +278,210 @@ export class ScenarioAudioSynthesizer {
     return this.isEnabled;
   }
 
-  private initCtx(): AudioContext {
-    if (!this.audioCtx) {
+  init(externalCtx?: AudioContext, targetAnalyser?: AnalyserNode): AudioContext {
+    if (externalCtx) {
+      this.audioCtx = externalCtx;
+    } else if (!this.audioCtx) {
       const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
       this.audioCtx = new AudioCtxClass();
-      this.masterGain = this.audioCtx.createGain();
-      this.masterGain.gain.value = 0.4;
-      this.masterGain.connect(this.audioCtx.destination);
     }
+
     if (this.audioCtx.state === "suspended") {
-      this.audioCtx.resume();
+      this.audioCtx.resume().catch(() => {});
     }
+
+    if (targetAnalyser) {
+      this.targetAnalyser = targetAnalyser;
+    }
+
+    if (!this.masterGain && this.audioCtx) {
+      this.masterGain = this.audioCtx.createGain();
+      this.masterGain.gain.value = this.isMuted ? 0 : 0.35;
+      // Connect to speakers for audible sound
+      this.masterGain.connect(this.audioCtx.destination);
+      // Connect to analyser so AudioVisualizer and spectrum see real acoustic data
+      if (this.targetAnalyser) {
+        try {
+          this.masterGain.connect(this.targetAnalyser);
+        } catch (_) {}
+      }
+    } else if (this.masterGain && this.targetAnalyser) {
+      try {
+        this.masterGain.connect(this.targetAnalyser);
+      } catch (_) {}
+    }
+
     return this.audioCtx;
   }
 
   getAudioDestination(): AudioNode | null {
-    if (!this.audioCtx) this.initCtx();
+    if (!this.audioCtx) this.init();
     return this.masterGain;
   }
 
   setMute(mute: boolean) {
     this.isMuted = mute;
-    if (this.masterGain) {
-      this.masterGain.gain.setValueAtTime(mute ? 0 : 0.4, this.audioCtx?.currentTime || 0);
+    if (this.masterGain && this.audioCtx) {
+      this.masterGain.gain.setValueAtTime(mute ? 0 : 0.35, this.audioCtx.currentTime);
     }
   }
 
-  playSpeechSegment(text: string, isSynthetic: boolean, onStart?: () => void, onEnd?: () => void): void {
+  playSpeechSegment(
+    text: string,
+    isSynthetic: boolean,
+    profile?: { pitchBase: number; spectralCutoff: number; vocoderNoise: number },
+    onStart?: () => void,
+    onEnd?: () => void
+  ): void {
     if (!this.isEnabled || this.isMuted) {
       onStart?.();
-      setTimeout(() => onEnd?.(), 1000);
+      setTimeout(() => onEnd?.(), 1500);
       return;
     }
 
-    // Attempt browser Web Speech API for audible voice output
-    if ("speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = isSynthetic ? 1.08 : 0.96;
-      utterance.pitch = isSynthetic ? 1.0 : 1.1;
+    const ctx = this.init();
+    if (!ctx) return;
 
-      // Select voice if available
-      const voices = window.speechSynthesis.getVoices();
-      if (voices.length > 0) {
-        if (isSynthetic) {
-          // Choose a slightly flatter or robotic sounding voice if available
-          const roboticVoice = voices.find(v => v.name.includes("Google") || v.name.includes("Natural") || v.lang.startsWith("en"));
-          if (roboticVoice) utterance.voice = roboticVoice;
-        } else {
-          const warmVoice = voices.find(v => v.name.includes("Female") || v.name.includes("Samantha") || v.lang.startsWith("en"));
-          if (warmVoice) utterance.voice = warmVoice;
-        }
-      }
-
-      utterance.onstart = () => onStart?.();
-      utterance.onend = () => onEnd?.();
-      utterance.onerror = () => onEnd?.();
-      window.speechSynthesis.speak(utterance);
-    } else {
-      // Fallback: Web Audio Tone burst to simulate speech cadence
-      this.playAcousticBurst(isSynthetic, onStart, onEnd);
+    if (ctx.state === "suspended") {
+      ctx.resume().catch(() => {});
     }
-  }
 
-  playAcousticBurst(isSynthetic: boolean, onStart?: () => void, onEnd?: () => void) {
-    const ctx = this.initCtx();
+    // Stop previous sounds
+    this.stopCurrentOscillators();
     onStart?.();
 
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    const filter = ctx.createBiquadFilter();
+    const now = ctx.currentTime;
+    const duration = 2.4;
 
-    osc.type = isSynthetic ? "sawtooth" : "triangle";
-    osc.frequency.setValueAtTime(isSynthetic ? 160 : 180, ctx.currentTime);
+    // 1. Root Pitch Oscillator (F0)
+    const osc1 = ctx.createOscillator();
+    const pitch = profile?.pitchBase || (isSynthetic ? 142 : 188);
+    osc1.frequency.setValueAtTime(pitch, now);
 
-    // Filter modeling: sharp vocoder lowpass vs natural warm resonance
-    filter.type = "lowpass";
-    filter.frequency.setValueAtTime(isSynthetic ? 4500 : 8000, ctx.currentTime);
+    if (isSynthetic) {
+      // Neural vocoder signature: harsh sawtooth, sharp harmonic quantization
+      osc1.type = "sawtooth";
+      // Subtle robotic step quantization
+      const stepLfo = ctx.createOscillator();
+      const stepGain = ctx.createGain();
+      stepLfo.type = "square";
+      stepLfo.frequency.setValueAtTime(2.2, now);
+      stepGain.gain.setValueAtTime(2.5, now);
+      stepLfo.connect(osc1.frequency);
+      stepLfo.start(now);
+      stepLfo.stop(now + duration);
+      this.currentNodes.push(stepLfo, stepGain);
+    } else {
+      // Authentic human: warm triangle wave with natural biological micro-jitter
+      osc1.type = "triangle";
+      const jitterLfo = ctx.createOscillator();
+      const jitterGain = ctx.createGain();
+      jitterLfo.type = "sine";
+      jitterLfo.frequency.setValueAtTime(5.6, now);
+      jitterGain.gain.setValueAtTime(8.0, now);
+      jitterLfo.connect(osc1.frequency);
+      jitterLfo.start(now);
+      jitterLfo.stop(now + duration);
+      this.currentNodes.push(jitterLfo, jitterGain);
+    }
 
-    gain.gain.setValueAtTime(0.01, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.1);
-    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 2.2);
+    // 2. Harmonic Formant Oscillator (F1 vocal tract resonance)
+    const osc2 = ctx.createOscillator();
+    osc2.type = isSynthetic ? "square" : "sine";
+    osc2.frequency.setValueAtTime(pitch * 1.5, now);
 
-    osc.connect(filter);
-    filter.connect(gain);
-    if (this.masterGain) gain.connect(this.masterGain);
+    // 3. Formant Bandpass & Lowpass Filter Chain
+    const formantFilter = ctx.createBiquadFilter();
+    formantFilter.type = "bandpass";
+    formantFilter.frequency.setValueAtTime(isSynthetic ? 750 : 620, now);
+    formantFilter.Q.setValueAtTime(isSynthetic ? 3.8 : 2.0, now);
 
-    osc.start(ctx.currentTime);
-    osc.stop(ctx.currentTime + 2.3);
+    const cutoffFilter = ctx.createBiquadFilter();
+    cutoffFilter.type = "lowpass";
+    const cutoffFreq = profile?.spectralCutoff || (isSynthetic ? 4600 : 8800);
+    cutoffFilter.frequency.setValueAtTime(cutoffFreq, now);
+    cutoffFilter.Q.setValueAtTime(isSynthetic ? 2.8 : 0.7, now);
 
-    setTimeout(() => {
+    // 4. Syllabic Cadence Envelope (Simulates spoken words cadence)
+    const envGain = ctx.createGain();
+    envGain.gain.setValueAtTime(0.001, now);
+    // Syllable 1
+    envGain.gain.exponentialRampToValueAtTime(0.24, now + 0.12);
+    envGain.gain.exponentialRampToValueAtTime(0.08, now + 0.55);
+    // Syllable 2
+    envGain.gain.exponentialRampToValueAtTime(0.22, now + 0.75);
+    envGain.gain.exponentialRampToValueAtTime(0.06, now + 1.25);
+    // Syllable 3
+    envGain.gain.exponentialRampToValueAtTime(0.25, now + 1.45);
+    envGain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+    // Connect audio graph
+    osc1.connect(formantFilter);
+    osc2.connect(formantFilter);
+    formantFilter.connect(cutoffFilter);
+    cutoffFilter.connect(envGain);
+
+    if (this.masterGain) {
+      envGain.connect(this.masterGain);
+    }
+
+    osc1.start(now);
+    osc2.start(now);
+    osc1.stop(now + duration);
+    osc2.stop(now + duration);
+
+    this.currentNodes.push(osc1, osc2, formantFilter, cutoffFilter, envGain);
+
+    // 5. In addition, speak text via SpeechSynthesis API if available
+    try {
+      if ("speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = isSynthetic ? 1.08 : 0.96;
+        utterance.pitch = isSynthetic ? 0.92 : 1.08;
+
+        const voices = window.speechSynthesis.getVoices();
+        if (voices.length > 0) {
+          if (isSynthetic) {
+            const rob = voices.find(v => v.lang.startsWith("en") && (v.name.includes("David") || v.name.includes("Male") || v.name.includes("Google")));
+            if (rob) utterance.voice = rob;
+          } else {
+            const warm = voices.find(v => v.lang.startsWith("en") && (v.name.includes("Female") || v.name.includes("Samantha") || v.name.includes("Natural")));
+            if (warm) utterance.voice = warm;
+          }
+        }
+        window.speechSynthesis.speak(utterance);
+      }
+    } catch (_) {}
+
+    if (this.speechTimeout) clearTimeout(this.speechTimeout);
+    this.speechTimeout = window.setTimeout(() => {
       onEnd?.();
-    }, 2400);
+    }, 2500);
   }
 
-  stop(): void {
-    if ("speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
-    }
+  private stopCurrentOscillators(): void {
     this.currentNodes.forEach((node) => {
       try {
         if ("stop" in node && typeof (node as any).stop === "function") {
           (node as any).stop();
         }
         node.disconnect();
-      } catch (e) {}
+      } catch (_) {}
     });
     this.currentNodes = [];
+  }
+
+  stop(): void {
+    if (this.speechTimeout) {
+      clearTimeout(this.speechTimeout);
+      this.speechTimeout = null;
+    }
+    try {
+      if ("speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
+    } catch (_) {}
+    this.stopCurrentOscillators();
   }
 }
