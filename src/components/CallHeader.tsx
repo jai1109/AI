@@ -229,7 +229,7 @@ export function CallHeader({
                 </>
               )}
               {isMicActive && (
-                <div className="flex items-center space-x-1.5 pl-2 border-l border-[#27272a]">
+                <div className="flex items-center space-x-2 pl-2 border-l border-[#27272a]">
                   <Volume2 className="w-3.5 h-3.5 text-[#a1a1aa]" />
                   <div className="w-16 h-2 rounded-full bg-[#27272a] overflow-hidden">
                     <div
@@ -239,8 +239,12 @@ export function CallHeader({
                       style={{ width: `${vuLevel}%` }}
                     />
                   </div>
-                  <span className="text-[10px] text-[#a1a1aa]">
+                  <span className="text-[10px] text-[#a1a1aa] font-mono">
                     {isMicSpeaking ? "VOICE ACTIVE" : "LISTENING"}
+                  </span>
+                  <span className="flex items-center space-x-1.5 px-2 py-0.5 rounded-md bg-green-950/40 border border-green-500/30 text-green-400 font-mono text-[11px] font-bold">
+                    <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse"></span>
+                    <span>Reading: {riskScore}%</span>
                   </span>
                 </div>
               )}

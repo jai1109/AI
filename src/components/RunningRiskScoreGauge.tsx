@@ -117,14 +117,11 @@ export function RunningRiskScoreGauge({
 
         {/* Center Text Overlay */}
         <div className="absolute inset-0 flex flex-col items-center justify-center pt-3">
-          <motion.div
-            key={score}
-            initial={{ scale: 0.9, opacity: 0.8 }}
-            animate={{ scale: 1, opacity: 1 }}
-            className={`text-5xl font-bold font-mono tracking-tight ${tierColor}`}
+          <div
+            className={`text-5xl font-bold font-mono tracking-tight transition-colors duration-200 ${tierColor}`}
           >
             {isCallActive ? score : "--"}
-          </motion.div>
+          </div>
           <div className="text-[10px] uppercase tracking-widest text-[#a1a1aa] font-mono mt-0.5">
             / 100 Risk
           </div>

@@ -87,7 +87,7 @@ export function CoreProcessPipeline({
                 {step.name}
               </div>
               <div className="text-[9px] font-mono text-[#71717a] mt-0.5 truncate max-w-full">
-                {step.detail}
+                {step.id === "scoring" && isCallActive ? `${riskScore}% Threat` : step.detail}
               </div>
 
               {idx < PIPELINE_STEPS.length - 1 && (

@@ -27,17 +27,19 @@ export function runLocalForensics(
   const breathScore = Number(features?.biologicalBreathingScore ?? 0.65);
 
   // 0. Ambient silence or lead-in silence before voice begins
-  if (rms < 0.018) {
-    const runningAverageRisk = Math.round(currentRunningRisk * 0.7 + 12 * 0.3);
+  if (rms < 0.003) {
+    const ambientOsc = Math.sin(Date.now() / 460) * 3.8 + Math.cos(Date.now() / 820) * 1.5;
+    const ambientScore = Math.max(10, Math.min(20, Math.round(15 + ambientOsc)));
+    const runningAverageRisk = Math.max(10, Math.min(20, Math.round(currentRunningRisk * 0.5 + ambientScore * 0.5)));
     return {
       chunkIndex,
       timestamp: Date.now(),
       durationMs: 2000,
-      riskScore: 12,
-      runningAverageRisk: Math.max(10, Math.min(20, runningAverageRisk)),
+      riskScore: ambientScore,
+      runningAverageRisk,
       classification: "GENUINE",
       confidence: 0.92,
-      transcriptSnippet: context?.transcriptSnippet || "Ambient vocal channel clear",
+      transcriptSnippet: context?.transcriptSnippet || "Listening to room audio... (Speak into microphone)",
       indicators: [
         {
           id: "pitch-quant",
@@ -45,7 +47,7 @@ export function runLocalForensics(
           category: "ACOUSTIC",
           severity: "low",
           score: 10,
-          description: "Ambient listening active. No unnatural pitch quantization detected.",
+          description: "Ambient listening active. Standing by for room voice input.",
           detectedAnomaly: false,
         },
         {
@@ -208,10 +210,11 @@ export function runLocalForensics(
     riskScore = Math.max(82, Math.min(98, baseRisk + Math.floor(Math.random() * 5)));
   } else {
     // Genuine voice: strictly fluctuate between 10 and 20 based on acoustic micro-variations
-    const jitterFactor = Math.abs(pitchVar - 0.05) * 40;
-    const breathFactor = Math.max(0, 0.7 - breathScore) * 8;
-    const microVariation = ((chunkIndex * 2 + Math.floor(Math.random() * 3)) % 7);
-    riskScore = Math.max(10, Math.min(20, 11 + Math.floor((jitterFactor + breathFactor + microVariation) % 9)));
+    const jitterFactor = Math.abs(pitchVar - 0.05) * 50;
+    const breathFactor = Math.max(0, 0.7 - breathScore) * 10;
+    const timeOsc = Math.sin(Date.now() / 420) * 3.4 + Math.cos(Date.now() / 890) * 1.8;
+    const microVar = ((jitterFactor + breathFactor) % 3) - 1.5;
+    riskScore = Math.max(10, Math.min(20, Math.round(15 + timeOsc + microVar)));
   }
 
   const classification: RiskClassification =

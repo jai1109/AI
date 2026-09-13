@@ -77,7 +77,8 @@ export function estimatePitch(timeDomainData: Float32Array, sampleRate: number):
     energy += timeDomainData[i] * timeDomainData[i];
   }
   const rms = Math.sqrt(energy / SIZE);
-  if (rms < 0.01) {
+  // Sensitive threshold to capture low/whispered vocal speech
+  if (rms < 0.002) {
     return { pitchHz: 0, confidence: 0 };
   }
 
@@ -105,14 +106,18 @@ export function estimatePitch(timeDomainData: Float32Array, sampleRate: number):
 export class RealtimeAudioProcessor {
   private audioCtx: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
+  private micPreGain: GainNode | null = null;
   private highpassFilter: BiquadFilterNode | null = null;
   private lowpassFilter: BiquadFilterNode | null = null;
+  private silenceSink: GainNode | null = null;
   private mediaStream: MediaStream | null = null;
   private sourceNode: MediaStreamAudioSourceNode | AudioNode | null = null;
   private filterbanks: number[][] | null = null;
   private bufferSource: AudioBufferSourceNode | null = null;
   private outputGain: GainNode | null = null;
   private isMuted: boolean = false;
+  private mediaRecorder: MediaRecorder | null = null;
+  private recordedChunks: Blob[] = [];
 
   // Rolling history for jitter/prosody calculation
   private pitchHistory: number[] = [];
@@ -120,6 +125,12 @@ export class RealtimeAudioProcessor {
   private cachedBufferFeatures: AudioFeatures | null = null;
 
   public isRunning = false;
+
+  async resume(): Promise<void> {
+    if (this.audioCtx && this.audioCtx.state === "suspended") {
+      await this.audioCtx.resume();
+    }
+  }
 
   async init(streamOrNode?: MediaStream | AudioNode): Promise<void> {
     if (!this.audioCtx) {
@@ -136,19 +147,32 @@ export class RealtimeAudioProcessor {
 
     this.analyser = this.audioCtx.createAnalyser();
     this.analyser.fftSize = fftSize;
-    this.analyser.smoothingTimeConstant = 0.6;
+    this.analyser.smoothingTimeConstant = 0.5;
+
+    // Digital pre-amp gain (2.8x) to boost raw microphone speech levels into clear dynamic range
+    this.micPreGain = this.audioCtx.createGain();
+    this.micPreGain.gain.value = 2.8;
 
     // Pre-processing filter chain (Removes rumble & preserves full speech bandwidth)
     this.highpassFilter = this.audioCtx.createBiquadFilter();
     this.highpassFilter.type = "highpass";
-    this.highpassFilter.frequency.value = 80; // Cut off low mechanical hum
+    this.highpassFilter.frequency.value = 75; // Cut off low mechanical hum
 
     this.lowpassFilter = this.audioCtx.createBiquadFilter();
     this.lowpassFilter.type = "lowpass";
     this.lowpassFilter.frequency.value = 16000; // Preserve natural vocal tract harmonics up to 16kHz
 
+    // Connect pre-processing chain: micPreGain -> highpass -> lowpass -> analyser
+    this.micPreGain.connect(this.highpassFilter);
     this.highpassFilter.connect(this.lowpassFilter);
     this.lowpassFilter.connect(this.analyser);
+
+    // CRITICAL: Connect analyser to a 0-gain sink reaching audioCtx.destination
+    // Browsers (Chrome, Safari, Edge) will not continuously pull media stream audio through the graph unless connected to destination!
+    this.silenceSink = this.audioCtx.createGain();
+    this.silenceSink.gain.value = 0;
+    this.analyser.connect(this.silenceSink);
+    this.silenceSink.connect(this.audioCtx.destination);
 
     if (!this.outputGain) {
       this.outputGain = this.audioCtx.createGain();
@@ -364,26 +388,96 @@ export class RealtimeAudioProcessor {
       this.sourceNode = streamOrNode;
     }
 
-    this.sourceNode.connect(this.highpassFilter);
+    // Connect into digital pre-amp for clear microphone levels
+    if (this.micPreGain) {
+      this.sourceNode.connect(this.micPreGain);
+    } else {
+      this.sourceNode.connect(this.highpassFilter);
+    }
     this.isRunning = true;
   }
 
-  getLiveVolume(): { rms: number; decibels: number; isSpeaking: boolean } {
+  startRecording(stream?: MediaStream): void {
+    const targetStream = stream || this.mediaStream;
+    if (!targetStream) return;
+    this.recordedChunks = [];
+    try {
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported("audio/webm")
+        ? "audio/webm"
+        : MediaRecorder.isTypeSupported("audio/mp4")
+        ? "audio/mp4"
+        : "";
+      this.mediaRecorder = mimeType
+        ? new MediaRecorder(targetStream, { mimeType })
+        : new MediaRecorder(targetStream);
+      this.mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          this.recordedChunks.push(e.data);
+        }
+      };
+      this.mediaRecorder.start(250);
+    } catch (err) {
+      console.warn("MediaRecorder start note:", err);
+    }
+  }
+
+  stopRecording(): Blob | null {
+    if (this.mediaRecorder && this.mediaRecorder.state !== "inactive") {
+      try {
+        this.mediaRecorder.stop();
+      } catch (_) {}
+    }
+    if (this.recordedChunks.length > 0) {
+      const type = this.recordedChunks[0]?.type || "audio/webm";
+      return new Blob(this.recordedChunks, { type });
+    }
+    return null;
+  }
+
+  getLiveVolume(): { rms: number; decibels: number; db: number; isSpeaking: boolean } {
     if (!this.analyser) {
-      return { rms: 0, decibels: -100, isSpeaking: false };
+      return { rms: 0, decibels: -100, db: -100, isSpeaking: false };
     }
-    const timeData = new Float32Array(this.analyser.fftSize);
+    const fftSize = this.analyser.fftSize || 2048;
+    const timeData = new Float32Array(fftSize);
     this.analyser.getFloatTimeDomainData(timeData);
+
     let sumSquares = 0;
+    let peak = 0;
     for (let i = 0; i < timeData.length; i++) {
-      sumSquares += timeData[i] * timeData[i];
+      const v = timeData[i];
+      sumSquares += v * v;
+      const abs = Math.abs(v);
+      if (abs > peak) peak = abs;
     }
-    const rms = Math.sqrt(sumSquares / timeData.length);
-    const decibels = rms > 1e-5 ? 20 * Math.log10(rms) : -100;
+    let rms = Math.sqrt(sumSquares / timeData.length);
+
+    // Byte fallback if float array was empty due to browser thread suspension
+    if (rms === 0) {
+      const byteData = new Uint8Array(fftSize);
+      this.analyser.getByteTimeDomainData(byteData);
+      let byteSumSq = 0;
+      for (let i = 0; i < byteData.length; i++) {
+        const norm = (byteData[i] - 128) / 128;
+        byteSumSq += norm * norm;
+        const abs = Math.abs(norm);
+        if (abs > peak) peak = abs;
+      }
+      rms = Math.sqrt(byteSumSq / byteData.length);
+    }
+
+    const rawDb = rms > 1e-5 ? 20 * Math.log10(rms) : -100;
+    const clampedDb = Math.max(-100, Math.min(0, Math.round(rawDb)));
+    // Sensitive detection: triggers immediately when voice begins speaking
+    const isSpeaking = rms >= 0.0035 || peak >= 0.009;
+
     return {
       rms,
-      decibels: Math.max(-100, Math.min(0, Math.round(decibels))),
-      isSpeaking: rms > 0.02,
+      decibels: clampedDb,
+      db: clampedDb,
+      isSpeaking,
     };
   }
 
@@ -448,8 +542,8 @@ export class RealtimeAudioProcessor {
     const rms = Math.sqrt(sumSquares / fftSize);
     const zcr = zeroCrossings / fftSize;
 
-    // Handle silence / ambient room tone: do NOT return 0 Hz rolloff or false anomalies!
-    if (rms < 0.015) {
+    // Handle silence / room quiet: threshold calibrated to 0.003 so normal vocal speech is analyzed
+    if (rms < 0.003) {
       return {
         rms,
         zeroCrossingRate: zcr,

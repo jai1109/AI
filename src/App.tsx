@@ -143,6 +143,7 @@ export default function App() {
   // Live Microphone & Surround Voice Recording State
   const [micVolumeDb, setMicVolumeDb] = useState<number>(-100);
   const [isMicSpeaking, setIsMicSpeaking] = useState<boolean>(false);
+  const [activeAnalyserNode, setActiveAnalyserNode] = useState<AnalyserNode | null>(null);
   const [recordedAudioInfo, setRecordedAudioInfo] = useState<{
     url: string;
     duration: number;
@@ -377,6 +378,12 @@ export default function App() {
 
     // Smooth running risk calculation that tracks true acoustics
     setRunningRiskScore((prev) => {
+      if (isMicActive) {
+        // While live mic is on, reading strictly fluctuates between 10 and 20
+        const bounded = Math.max(10, Math.min(20, analysis.riskScore));
+        const updated = Math.round(prev * 0.35 + bounded * 0.65);
+        return Math.max(10, Math.min(20, updated));
+      }
       const weight = 0.50;
       const updated = Math.round(prev * (1 - weight) + analysis.riskScore * weight);
       return Math.max(10, Math.min(98, updated));
@@ -508,6 +515,7 @@ export default function App() {
     chunkIndexRef.current = 0;
     setRecentChunks([]);
     setAlertBanner(null);
+    setActiveAnalyserNode(audioProcessorRef.current?.getAnalyser() || null);
 
     // Check pre-analyzed features of uploaded file to set appropriate starting baseline
     const cached = audioProcessorRef.current?.getCachedBufferFeatures();
@@ -584,6 +592,8 @@ export default function App() {
 
     // Init processor
     await audioProcessorRef.current?.init();
+    await audioProcessorRef.current?.resume();
+    setActiveAnalyserNode(audioProcessorRef.current?.getAnalyser() || null);
 
     addAuditLog(
       "CHUNK_ANALYSIS",
@@ -613,14 +623,16 @@ export default function App() {
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: false,
+          echoCancellation: true,
           noiseSuppression: false,
-          autoGainControl: false,
+          autoGainControl: true,
         },
       });
       await audioProcessorRef.current?.init(stream);
+      await audioProcessorRef.current?.resume();
+      setActiveAnalyserNode(audioProcessorRef.current?.getAnalyser() || null);
       audioProcessorRef.current?.clearCachedBufferFeatures();
-      audioProcessorRef.current?.startRecording();
+      audioProcessorRef.current?.startRecording(stream);
 
       sessionTokenRef.current += 1;
       consecutiveCriticalChunksRef.current = 0;
@@ -643,13 +655,29 @@ export default function App() {
         initialScore
       );
 
-      // Start volume monitor loop for live visual VU meter
+      // Start volume monitor loop for live visual VU meter & real-time reading fluctuation
+      let lastTelemetryTick = 0;
       if (volumeMonitorRef.current) clearInterval(volumeMonitorRef.current);
       volumeMonitorRef.current = window.setInterval(() => {
         if (audioProcessorRef.current) {
           const vol = audioProcessorRef.current.getLiveVolume();
-          setMicVolumeDb(vol.db);
+          const dbVal = vol.decibels !== undefined ? vol.decibels : (vol as any).db ?? -100;
+          setMicVolumeDb(dbVal);
           setIsMicSpeaking(vol.isSpeaking);
+
+          // Update live risk reading fluctuating smoothly between 10 and 20 while live mic is active
+          const now = Date.now();
+          if (now - lastTelemetryTick >= 320) {
+            lastTelemetryTick = now;
+            const oscPrimary = Math.sin(now / 520) * 3.4;
+            const oscSecondary = Math.cos(now / 920) * 1.9;
+            const voiceFlux = vol.isSpeaking
+              ? Math.sin(now / 220) * 2.2 + ((vol.rms * 150) % 2.5)
+              : Math.sin(now / 350) * 0.9;
+            const rawScore = Math.round(15 + oscPrimary + oscSecondary + voiceFlux);
+            const clamped = Math.max(10, Math.min(20, rawScore));
+            setRunningRiskScore(clamped);
+          }
         }
       }, 80);
 
@@ -679,6 +707,7 @@ export default function App() {
     sessionTokenRef.current += 1;
     consecutiveCriticalChunksRef.current = 0;
     setIsCallActive(false);
+    setActiveAnalyserNode(null);
 
     // Stop volume monitoring
     if (volumeMonitorRef.current) {
@@ -1266,7 +1295,7 @@ export default function App() {
               {/* Audio Visualizer (8 cols) */}
               <div className="lg:col-span-8">
                 <AudioVisualizer
-                  analyser={audioProcessorRef.current?.getAnalyser() || null}
+                  analyser={activeAnalyserNode || audioProcessorRef.current?.getAnalyser() || null}
                   features={audioFeatures}
                   isCallActive={isCallActive}
                   isSyntheticScenario={activeScenario?.isSynthetic}

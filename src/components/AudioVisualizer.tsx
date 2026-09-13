@@ -73,6 +73,21 @@ export function AudioVisualizer({
         if (analyser) {
           timeData = new Float32Array(analyser.fftSize);
           analyser.getFloatTimeDomainData(timeData);
+
+          // If float data was all zeros (thread pause), fall back to byte time domain
+          let peakSample = 0;
+          for (let i = 0; i < timeData.length; i++) {
+            const abs = Math.abs(timeData[i]);
+            if (abs > peakSample) peakSample = abs;
+          }
+
+          if (peakSample === 0) {
+            const byteData = new Uint8Array(analyser.fftSize);
+            analyser.getByteTimeDomainData(byteData);
+            for (let i = 0; i < byteData.length; i++) {
+              timeData[i] = (byteData[i] - 128) / 128;
+            }
+          }
         } else {
           timeData = new Float32Array(128);
           for (let i = 0; i < 128; i++) {
@@ -83,6 +98,15 @@ export function AudioVisualizer({
           }
           phase += 0.1;
         }
+
+        // Calculate peak amplitude to provide dynamic auto-ranging for microphone input
+        let peak = 0.005;
+        for (let i = 0; i < timeData.length; i++) {
+          const abs = Math.abs(timeData[i]);
+          if (abs > peak) peak = abs;
+        }
+        // Adaptive visual gain so real microphone speech produces prominent, beautiful sound waves
+        const visualGain = Math.min(18, Math.max(2.5, 0.65 / (peak + 0.001)));
 
         ctx.lineWidth = 2.5;
         const grad = ctx.createLinearGradient(0, 0, width, 0);
@@ -102,8 +126,8 @@ export function AudioVisualizer({
         let x = 0;
 
         for (let i = 0; i < timeData.length; i++) {
-          const v = timeData[i];
-          const y = (v * height * 0.7) / 2 + height / 2;
+          const v = Math.max(-1, Math.min(1, timeData[i] * visualGain));
+          const y = (v * height * 0.42) + height / 2;
 
           if (i === 0) {
             ctx.moveTo(x, y);
@@ -123,7 +147,8 @@ export function AudioVisualizer({
         ctx.fillStyle = "#a1a1aa";
         ctx.font = "10px JetBrains Mono, monospace";
         ctx.textAlign = "left";
-        ctx.fillText(`RMS: ${(features?.rms || 0.24).toFixed(3)} | ZCR: ${(features?.zeroCrossingRate || 0.08).toFixed(3)}`, 14, 22);
+        const currentRms = features?.rms !== undefined ? features.rms : peak;
+        ctx.fillText(`RMS: ${currentRms.toFixed(3)} | PEAK: ${peak.toFixed(3)} | ZCR: ${(features?.zeroCrossingRate || 0.08).toFixed(3)}`, 14, 22);
       } else if (activeTab === "spectrum") {
         let freqData: Float32Array;
         if (analyser) {
